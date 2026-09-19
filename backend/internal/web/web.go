@@ -22,6 +22,7 @@ type AppError struct {
 	Status  int
 	Code    string
 	Message string
+	Details any
 	Cause   error
 }
 
@@ -62,6 +63,12 @@ func Internal(cause error) *AppError {
 	return &AppError{Status: http.StatusInternalServerError, Code: "INTERNAL_ERROR", Message: "internal service error", Cause: cause}
 }
 
+// WithDetails attaches structured detail (for example concrete pin conflicts) to an error.
+func (e *AppError) WithDetails(details any) *AppError {
+	e.Details = details
+	return e
+}
+
 type Envelope struct {
 	Data      any    `json:"data,omitempty"`
 	Error     *Error `json:"error,omitempty"`
@@ -71,6 +78,7 @@ type Envelope struct {
 type Error struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	Details any    `json:"details,omitempty"`
 }
 
 type Page struct {
@@ -93,7 +101,7 @@ func NoContent(c *gin.Context) { c.Status(http.StatusNoContent) }
 func Fail(c *gin.Context, err error) {
 	var appErr *AppError
 	if errors.As(err, &appErr) {
-		c.JSON(appErr.Status, Envelope{Error: &Error{Code: appErr.Code, Message: appErr.Message}, RequestID: RequestID(c)})
+		c.JSON(appErr.Status, Envelope{Error: &Error{Code: appErr.Code, Message: appErr.Message, Details: appErr.Details}, RequestID: RequestID(c)})
 		return
 	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {

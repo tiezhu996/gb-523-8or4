@@ -131,8 +131,28 @@ func (r *LayoutScenarioRepository) FinishEvaluation(ctx context.Context, scenari
 	})
 }
 
-func (r *LayoutScenarioRepository) Transition(ctx context.Context, scenario model.LayoutScenario, target constants.ScenarioStatus, actorID uint, entry audit.Entry) error {
+// UpdatePins replaces the draft rack pin set with optimistic locking. It never
+// changes the scenario status, so unpinning cannot disturb other results.
+func (r *LayoutScenarioRepository) UpdatePins(ctx context.Context, scenario model.LayoutScenario, pinsJSON string, entry audit.Entry) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&model.LayoutScenario{}).
+			Where("id = ? AND version = ? AND scenario_status = ?", scenario.ID, scenario.Version, constants.ScenarioDraft).
+			Updates(map[string]any{
+				"rack_pins_json": pinsJSON,
+				"version":        gorm.Expr("version + 1"),
+			})
+		if result.Error != nil {
+			return fmt.Errorf("update scenario rack pins: %w", result.Error)
+		}
+		if result.RowsAffected != 1 {
+			return web.Conflict("SCENARIO_VERSION_CONFLICT", "scenario changed before pins were saved", nil)
+		}
+		entry.EntityID = scenario.ID
+		return r.audit.RecordWithDB(ctx, tx, entry)
+	})
+}
+
+func (r *LayoutScenarioRepository) Transition(ctx context.Context, scenario model.LayoutScenario, target constants.ScenarioStatus, actorID uint, entry audit.Entry) error {	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		updates := map[string]any{"scenario_status": target, "version": gorm.Expr("version + 1")}
 		if target == constants.ScenarioApproved {
 			updates["approved_by"] = actorID

@@ -83,3 +83,38 @@ func validateFinalAssignments(racks []model.Rack, usage map[uint]*rackUsage, zon
 func violation(code string, id uint, entity, message string, actual, limit float64) dto.ConstraintViolation {
 	return dto.ConstraintViolation{Code: code, Severity: "critical", EntityType: entity, EntityID: id, Message: message, Actual: actual, Limit: limit}
 }
+
+// CheckPins validates draft pin instructions without mutating any draft. It
+// replays pins in deterministic order and applies the same power, airflow, U,
+// zone-cooling, return-temperature and redundancy-isolation rules as a full
+// evaluation. It exists so an evaluation can fail before the draft leaves the
+// draft state and return concrete rack/zone/load conflicts.
+func (e *Engine) CheckPins(zones []model.ThermalZone, racks []model.Rack, loads []model.EquipmentLoad, pins []dto.PinnedRack) []dto.ConstraintViolation {
+	replayed := e.Evaluate(zones, racks, loads, pins...)
+	if !replayed.PinnedFailure {
+		return nil
+	}
+	return replayed.Violations
+}
+
+func pinViolation(code string, pin dto.PinnedRack, message string) dto.ConstraintViolation {
+	return dto.ConstraintViolation{
+		Code: code, Severity: "critical", EntityType: "equipment_load", EntityID: pin.LoadID,
+		Message: fmt.Sprintf("pinned placement rejected: %s (rack_id=%d)", message, pin.RackID),
+	}
+}
+
+// decoratePinViolations prefixes constraint evidence collected for a pinned
+// rack with the pin context so failures identify the exact rack and load.
+func decoratePinViolations(pin dto.PinnedRack, evidence []dto.ConstraintViolation) []dto.ConstraintViolation {
+	decorated := make([]dto.ConstraintViolation, 0, len(evidence))
+	for _, item := range evidence {
+		copy := item
+		copy.Code = "PIN_" + item.Code
+		copy.EntityType = "equipment_load"
+		copy.EntityID = pin.LoadID
+		copy.Message = fmt.Sprintf("pinned placement rejected: %s (load_id=%d rack_id=%d)", item.Message, pin.LoadID, pin.RackID)
+		decorated = append(decorated, copy)
+	}
+	return decorated
+}

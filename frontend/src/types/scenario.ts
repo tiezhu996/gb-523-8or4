@@ -22,7 +22,16 @@ export interface RackAssignment {
   airflow_cfm: number;
   rack_units: number;
   placement_score: number;
+  pinned: boolean;
   explanation: string[];
+}
+
+export interface PinnedRack {
+  load_id: number;
+  rack_id: number;
+  rack_code: string;
+  zone_id: number;
+  zone_code: string;
 }
 
 export interface ZoneThermalResult {
@@ -39,6 +48,8 @@ export interface LayoutScenario {
   id: number;
   name: string;
   scenario_status: ScenarioStatus;
+  load_ids: number[];
+  pins: PinnedRack[];
   assignments: RackAssignment[];
   zone_results: ZoneThermalResult[];
   violations: ConstraintViolation[];

@@ -2,9 +2,10 @@ import { HttpErrorResponse, HttpInterceptorFn } from '@angular/common/http';
 import { inject } from '@angular/core';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { catchError, throwError } from 'rxjs';
+import { ConstraintViolation } from '../../types/scenario';
 
 interface ErrorEnvelope {
-  error?: {code?: string; message?: string};
+  error?: {code?: string; message?: string; details?: ConstraintViolation[]};
   request_id?: string;
 }
 

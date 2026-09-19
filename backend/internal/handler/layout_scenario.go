@@ -72,8 +72,24 @@ func (h *LayoutScenarioHandler) Evaluate(c *gin.Context) {
 	web.OK(c, item)
 }
 
-func (h *LayoutScenarioHandler) Transition(c *gin.Context) {
+func (h *LayoutScenarioHandler) SetPins(c *gin.Context) {
 	id, ok := web.ParamID(c)
+	if !ok {
+		return
+	}
+	var req dto.UpdatePinsRequest
+	if !web.BindJSON(c, &req) {
+		return
+	}
+	item, err := h.service.SetPins(c.Request.Context(), id, req, auditFrom(c))
+	if err != nil {
+		web.Fail(c, err)
+		return
+	}
+	web.OK(c, item)
+}
+
+func (h *LayoutScenarioHandler) Transition(c *gin.Context) {	id, ok := web.ParamID(c)
 	if !ok {
 		return
 	}
