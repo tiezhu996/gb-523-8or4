@@ -1,0 +1,13 @@
+.env
+.DS_Store
+node_modules/
+frontend/dist/
+frontend/.angular/
+coverage/
+*.log
+*.db
+*.db-shm
+*.db-wal
+backend/bin/
+output/*.json
+!runtime_smoke.json

@@ -1,0 +1,71 @@
+name: ${COMPOSE_PROJECT_NAME:-datacenter-thermal-capacity-planner}
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-datacenter-thermal-capacity-planner}-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-thermal_planner}
+      POSTGRES_USER: ${POSTGRES_USER:-thermal_planner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-thermal_planner_dev}
+    ports:
+      - "${DB_PORT:-57523}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-thermal_planner} -d ${POSTGRES_DB:-thermal_planner}"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 5s
+
+  backend:
+    build:
+      context: ./backend
+    container_name: ${COMPOSE_PROJECT_NAME:-datacenter-thermal-capacity-planner}-backend
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      DB_DRIVER: postgres
+      DB_DSN: ${DB_DSN:-host=db user=thermal_planner password=thermal_planner_dev dbname=thermal_planner port=5432 sslmode=disable TimeZone=Asia/Shanghai}
+      DB_AUTO_MIGRATE: ${DB_AUTO_MIGRATE:-true}
+      JWT_SECRET: ${JWT_SECRET:-change-this-datacenter-planner-secret-32-bytes}
+      JWT_TTL_MINUTES: ${JWT_TTL_MINUTES:-480}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:18523}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-180}
+      PLANNER_MAX_ITERATIONS: ${PLANNER_MAX_ITERATIONS:-500}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SHUTDOWN_TIMEOUT_SECONDS: ${SHUTDOWN_TIMEOUT_SECONDS:-10}
+    ports:
+      - "${BACKEND_PORT:-19523}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 5s
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: ${COMPOSE_PROJECT_NAME:-datacenter-thermal-capacity-planner}-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-18523}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 5s
+
+volumes:
+  postgres_data:
+    name: ${COMPOSE_PROJECT_NAME:-datacenter-thermal-capacity-planner}-postgres-data
