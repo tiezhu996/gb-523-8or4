@@ -11,6 +11,7 @@ type LayoutScenario struct {
 	Name                     string                   `gorm:"size:120;not null;uniqueIndex" json:"name"`
 	ScenarioStatus           constants.ScenarioStatus `gorm:"size:32;not null;index" json:"scenario_status"`
 	RackAssignmentsJSON      string                   `gorm:"type:text;not null;default:'[]'" json:"rack_assignments_json"`
+	PinnedRackJSON           string                   `gorm:"type:text;not null;default:'[]'" json:"pinned_rack_json"`
 	InputSnapshotJSON        string                   `gorm:"type:text;not null;default:'{}'" json:"input_snapshot_json"`
 	ZoneResultsJSON          string                   `gorm:"type:text;not null;default:'[]'" json:"zone_results_json"`
 	TotalPowerKW             float64                  `gorm:"not null;default:0" json:"total_power_kw"`

@@ -36,4 +36,8 @@ export class ApiClient {
   put<T>(path: string, body: unknown): Observable<T> {
     return this.http.put<ApiEnvelope<T>>(`${this.base}${path}`, body).pipe(map((response) => response.data));
   }
+
+  delete<T>(path: string, body: unknown): Observable<T> {
+    return this.http.request<ApiEnvelope<T>>('delete', `${this.base}${path}`, {body}).pipe(map((response) => response.data!));
+  }
 }

@@ -98,6 +98,40 @@ func (h *LayoutScenarioHandler) Transition(c *gin.Context) {
 	web.OK(c, item)
 }
 
+func (h *LayoutScenarioHandler) Pin(c *gin.Context) {
+	id, ok := web.ParamID(c)
+	if !ok {
+		return
+	}
+	var req dto.PinRackRequest
+	if !web.BindJSON(c, &req) {
+		return
+	}
+	item, err := h.service.Pin(c.Request.Context(), id, req, auditFrom(c))
+	if err != nil {
+		web.Fail(c, err)
+		return
+	}
+	web.OK(c, item)
+}
+
+func (h *LayoutScenarioHandler) Unpin(c *gin.Context) {
+	id, ok := web.ParamID(c)
+	if !ok {
+		return
+	}
+	var req dto.UnpinRackRequest
+	if !web.BindJSON(c, &req) {
+		return
+	}
+	item, err := h.service.Unpin(c.Request.Context(), id, req, auditFrom(c))
+	if err != nil {
+		web.Fail(c, err)
+		return
+	}
+	web.OK(c, item)
+}
+
 func (h *LayoutScenarioHandler) Compare(c *gin.Context) {
 	leftID, ok := web.ParamID(c)
 	if !ok {

@@ -3,6 +3,7 @@ package dto
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"datacenter-thermal-capacity-planner/backend/internal/constants"
@@ -24,6 +25,50 @@ type TransitionScenarioRequest struct {
 	Reason       string                   `json:"reason" binding:"max=500"`
 }
 
+type PinRackRequest struct {
+	LoadID  uint `json:"load_id" binding:"required"`
+	RackID  uint `json:"rack_id" binding:"required"`
+	Version uint `json:"version" binding:"required"`
+}
+
+type UnpinRackRequest struct {
+	LoadID  uint `json:"load_id" binding:"required"`
+	Version uint `json:"version" binding:"required"`
+}
+
+type RackPin struct {
+	LoadID uint `json:"load_id"`
+	RackID uint `json:"rack_id"`
+}
+
+func DecodeRackPins(raw string) []RackPin {
+	pins := []RackPin{}
+	if strings.TrimSpace(raw) == "" {
+		return pins
+	}
+	_ = json.Unmarshal([]byte(raw), &pins)
+	return pins
+}
+
+func EncodeRackPins(pins []RackPin) (string, error) {
+	if pins == nil {
+		pins = []RackPin{}
+	}
+	encoded, err := json.Marshal(pins)
+	if err != nil {
+		return "", fmt.Errorf("encode rack pins: %w", err)
+	}
+	return string(encoded), nil
+}
+
+func PinIndex(pins []RackPin) map[uint]uint {
+	index := make(map[uint]uint, len(pins))
+	for _, pin := range pins {
+		index[pin.LoadID] = pin.RackID
+	}
+	return index
+}
+
 type ConstraintViolation struct {
 	Code       string  `json:"code"`
 	Severity   string  `json:"severity"`
@@ -32,6 +77,8 @@ type ConstraintViolation struct {
 	Message    string  `json:"message"`
 	Actual     float64 `json:"actual"`
 	Limit      float64 `json:"limit"`
+	RackID     uint    `json:"rack_id,omitempty"`
+	ZoneID     uint    `json:"zone_id,omitempty"`
 }
 
 type RackAssignment struct {
@@ -46,6 +93,7 @@ type RackAssignment struct {
 	AirflowCFM     float64  `json:"airflow_cfm"`
 	RackUnits      int      `json:"rack_units"`
 	PlacementScore float64  `json:"placement_score"`
+	Pinned         bool     `json:"pinned"`
 	Explanation    []string `json:"explanation"`
 }
 
@@ -63,6 +111,8 @@ type ScenarioResponse struct {
 	ID                   uint                     `json:"id"`
 	Name                 string                   `json:"name"`
 	ScenarioStatus       constants.ScenarioStatus `json:"scenario_status"`
+	LoadIDs              []uint                   `json:"load_ids"`
+	Pins                 []RackPin                `json:"pins"`
 	Assignments          []RackAssignment         `json:"assignments"`
 	ZoneResults          []ZoneThermalResult      `json:"zone_results"`
 	Violations           []ConstraintViolation    `json:"violations"`
@@ -108,7 +158,18 @@ func DecodeScenario(value model.LayoutScenario) ScenarioResponse {
 		TotalPowerKW: value.TotalPowerKW, PeakTempC: value.PeakTempC,
 		Score: value.Score, Version: value.Version, AlgorithmVersion: value.AlgorithmVersion,
 		CreatedBy: value.CreatedBy, ApprovedBy: value.ApprovedBy,
+		Pins:        DecodeRackPins(value.PinnedRackJSON),
+		LoadIDs:     []uint{},
 		Assignments: []RackAssignment{}, ZoneResults: []ZoneThermalResult{}, Violations: []ConstraintViolation{},
+	}
+	_ = json.Unmarshal([]byte(value.InputSnapshotJSON), &struct {
+		LoadIDs *[]uint `json:"load_ids"`
+	}{LoadIDs: &response.LoadIDs})
+	if response.LoadIDs == nil {
+		response.LoadIDs = []uint{}
+	}
+	if response.Pins == nil {
+		response.Pins = []RackPin{}
 	}
 	_ = json.Unmarshal([]byte(value.RackAssignmentsJSON), &response.Assignments)
 	_ = json.Unmarshal([]byte(value.ZoneResultsJSON), &response.ZoneResults)

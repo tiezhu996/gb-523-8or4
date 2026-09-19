@@ -36,10 +36,12 @@ docker compose down -v --remove-orphans
 - `/zones`：编辑热区冷量、送风/最大回风温度、邻接权重与区域状态，查看机柜功率边界占比。
 - `/racks`：按热区显示稳定机柜网格，维护唯一位置、功率、气流、U 位和可用状态。
 - `/loads`：维护设备负载、冗余组和偏好热区，对 ready 输入执行批量业务校验。
-- `/planner`：选择负载创建草稿，执行确定性候选布局，查看逐机柜结果、热传播、评分和约束证据。
+- `/planner`：选择负载创建草稿，将负载固定到指定机柜或取消固定，执行确定性候选布局，查看逐机柜结果、固定冲突、热传播、评分和约束证据。
 - `/audit`：处理待复核方案、比较两个评估版本、检索带 request ID 的审计事件。
 
 布局算法先按负载对可用机柜的约束紧度排序，再按容量余量、邻接热惩罚、热点惩罚、保留机柜惩罚和偏好奖励评分；评分相同时按机柜编码排序。相同输入快照与算法版本会得到相同结果。无法放置的负载会返回 `LOAD_UNPLACED` 及候选约束证据，不会静默忽略。
+
+机柜固定（pin）只允许在草稿上设置或取消，固定关系与方案版本一起持久化，刷新后可回读。评估时固定负载先于自动布局占用指定机柜，仍然受机柜功率、气流、U 位、热区冷量/回风温度与冗余跨区隔离约束；任一固定项不满足，本次评估整体失败并保留草稿，错误码 `PINNED_PLACEMENT_CONFLICT`，`details.conflicts` 返回具体机柜（`rack_code`）、热区（`zone_code`）与负载冲突（含 `RACK_POWER_LIMIT`、`RACK_AIRFLOW_LIMIT`、`RACK_UNIT_LIMIT`、`RACK_UNAVAILABLE`、`ZONE_COOLING_LIMIT`、`ZONE_RETURN_TEMP`、`REDUNDANCY_ZONE_COLLISION` 等）。固定通过时，固定项优先占位并在结果中以 `pinned: true` 标记，其余负载仍按确定性算法生成；取消固定不改变其他输入，仅推进乐观锁版本。
 
 ## 技术栈
 
@@ -118,6 +120,8 @@ output/                     验收报告与 Browser 截图
 | `POST /api/v1/loads/validate` | 批量校验 ready 输入 |
 | `GET/POST /api/v1/scenarios` | 方案查询与创建 |
 | `POST /api/v1/scenarios/:id/evaluate` | 版本校验后执行规划 |
+| `POST /api/v1/scenarios/:id/pins` | 草稿中将负载固定到指定机柜 |
+| `DELETE /api/v1/scenarios/:id/pins` | 取消某负载的机柜固定 |
 | `POST /api/v1/scenarios/:id/transition` | 复核、批准或归档状态流 |
 | `GET /api/v1/scenarios/:id/compare?right_id=` | 比较两个方案 |
 | `GET /api/v1/audit-events` | 审计检索 |

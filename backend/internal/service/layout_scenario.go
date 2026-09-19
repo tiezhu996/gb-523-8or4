@@ -24,8 +24,9 @@ type LayoutScenarioService struct {
 }
 
 type scenarioInputSnapshot struct {
-	LoadIDs          []uint `json:"load_ids"`
-	AlgorithmVersion string `json:"algorithm_version"`
+	LoadIDs          []uint        `json:"load_ids"`
+	Pins             []dto.RackPin `json:"pins"`
+	AlgorithmVersion string        `json:"algorithm_version"`
 }
 
 func NewLayoutScenarioService(scenarios *repository.LayoutScenarioRepository, zones *repository.ThermalZoneRepository, racks *repository.RackRepository, loads *repository.EquipmentLoadRepository, engine *planner.Engine) *LayoutScenarioService {
@@ -65,13 +66,13 @@ func (s *LayoutScenarioService) Create(ctx context.Context, req dto.CreateLayout
 			return dto.ScenarioResponse{}, web.Unprocessable("LOAD_NOT_READY", fmt.Sprintf("load %d is not ready for planning", load.ID), nil)
 		}
 	}
-	snapshot, err := json.Marshal(scenarioInputSnapshot{LoadIDs: req.LoadIDs, AlgorithmVersion: planner.AlgorithmVersion})
+	snapshot, err := json.Marshal(scenarioInputSnapshot{LoadIDs: req.LoadIDs, Pins: []dto.RackPin{}, AlgorithmVersion: planner.AlgorithmVersion})
 	if err != nil {
 		return dto.ScenarioResponse{}, web.Internal(fmt.Errorf("encode scenario input: %w", err))
 	}
 	item := model.LayoutScenario{
 		Name: strings.TrimSpace(req.Name), ScenarioStatus: constants.ScenarioDraft,
-		RackAssignmentsJSON: "[]", InputSnapshotJSON: string(snapshot), ZoneResultsJSON: "[]",
+		RackAssignmentsJSON: "[]", PinnedRackJSON: "[]", InputSnapshotJSON: string(snapshot), ZoneResultsJSON: "[]",
 		ConstraintViolationsJSON: "[]", AlgorithmVersion: planner.AlgorithmVersion,
 		Version: 1, CreatedBy: actor.ActorID,
 	}
@@ -93,6 +94,7 @@ func (s *LayoutScenarioService) Evaluate(ctx context.Context, id, version uint, 
 	if err := json.Unmarshal([]byte(current.InputSnapshotJSON), &input); err != nil || len(input.LoadIDs) == 0 {
 		return dto.ScenarioResponse{}, web.Unprocessable("INVALID_SCENARIO_SNAPSHOT", "scenario input snapshot cannot be evaluated", err)
 	}
+	pins := dto.DecodeRackPins(current.PinnedRackJSON)
 	zones, err := s.zones.All(ctx)
 	if err != nil {
 		return dto.ScenarioResponse{}, err
@@ -105,13 +107,24 @@ func (s *LayoutScenarioService) Evaluate(ctx context.Context, id, version uint, 
 	if err != nil {
 		return dto.ScenarioResponse{}, err
 	}
+	result := s.engine.Evaluate(zones, racks, loads, pins)
+	if len(result.PinConflicts) > 0 {
+		conflicts := enrichPinConflicts(result.PinConflicts, racks, zones)
+		actor.Action = "layout_scenario.evaluate.blocked"
+		actor.EntityType = "layout_scenario"
+		actor.BeforeSummary = fmt.Sprintf("draft pins=%d", len(pins))
+		actor.AfterSummary = fmt.Sprintf("pin_conflicts=%d", len(conflicts))
+		_ = s.scenarios.RecordPinBlock(ctx, id, actor)
+		return dto.ScenarioResponse{}, web.UnprocessableDetails("PINNED_PLACEMENT_CONFLICT",
+			"one or more fixed rack assignments violate rack, thermal zone or redundancy constraints; the draft was kept",
+			map[string]any{"scenario_id": id, "version": current.Version, "conflicts": conflicts})
+	}
 	actor.Action = "layout_scenario.evaluate.start"
 	actor.EntityType = "layout_scenario"
 	evaluating, err := s.scenarios.BeginEvaluation(ctx, id, version, actor)
 	if err != nil {
 		return dto.ScenarioResponse{}, err
 	}
-	result := s.engine.Evaluate(zones, racks, loads)
 	assignments, err := json.Marshal(result.Assignments)
 	if err != nil {
 		return dto.ScenarioResponse{}, web.Internal(fmt.Errorf("encode assignments: %w", err))
@@ -126,11 +139,12 @@ func (s *LayoutScenarioService) Evaluate(ctx context.Context, id, version uint, 
 	}
 	fullSnapshot, err := json.Marshal(struct {
 		LoadIDs          []uint                `json:"load_ids"`
+		Pins             []dto.RackPin         `json:"pins"`
 		AlgorithmVersion string                `json:"algorithm_version"`
 		Zones            []model.ThermalZone   `json:"zones"`
 		Racks            []model.Rack          `json:"racks"`
 		Loads            []model.EquipmentLoad `json:"loads"`
-	}{LoadIDs: input.LoadIDs, AlgorithmVersion: planner.AlgorithmVersion, Zones: zones, Racks: racks, Loads: loads})
+	}{LoadIDs: input.LoadIDs, Pins: pins, AlgorithmVersion: planner.AlgorithmVersion, Zones: zones, Racks: racks, Loads: loads})
 	if err != nil {
 		return dto.ScenarioResponse{}, web.Internal(fmt.Errorf("encode evaluation snapshot: %w", err))
 	}
@@ -174,6 +188,129 @@ func (s *LayoutScenarioService) Transition(ctx context.Context, id uint, req dto
 		return dto.ScenarioResponse{}, err
 	}
 	return s.Get(ctx, id)
+}
+
+func (s *LayoutScenarioService) Pin(ctx context.Context, id uint, req dto.PinRackRequest, actor audit.Entry) (dto.ScenarioResponse, error) {
+	current, err := s.scenarios.Get(ctx, id)
+	if err != nil {
+		return dto.ScenarioResponse{}, err
+	}
+	if current.ScenarioStatus != constants.ScenarioDraft {
+		return dto.ScenarioResponse{}, web.Unprocessable("SCENARIO_NOT_DRAFT", "rack pins can only be changed while the scenario is a draft", nil)
+	}
+	var input scenarioInputSnapshot
+	if err := json.Unmarshal([]byte(current.InputSnapshotJSON), &input); err != nil {
+		return dto.ScenarioResponse{}, web.Unprocessable("INVALID_SCENARIO_SNAPSHOT", "scenario input snapshot cannot be edited", err)
+	}
+	if !containsID(input.LoadIDs, req.LoadID) {
+		return dto.ScenarioResponse{}, web.Unprocessable("PINNED_LOAD_MISSING", "load is not part of this scenario", nil)
+	}
+	rack, err := s.racks.Get(ctx, req.RackID)
+	if err != nil {
+		return dto.ScenarioResponse{}, web.Unprocessable("PINNED_RACK_MISSING", "rack does not exist", nil)
+	}
+	pins := dto.DecodeRackPins(current.PinnedRackJSON)
+	replaced := false
+	for index := range pins {
+		if pins[index].LoadID == req.LoadID {
+			pins[index].RackID = req.RackID
+			replaced = true
+		}
+	}
+	if !replaced {
+		pins = append(pins, dto.RackPin{LoadID: req.LoadID, RackID: req.RackID})
+	}
+	encoded, err := dto.EncodeRackPins(pins)
+	if err != nil {
+		return dto.ScenarioResponse{}, web.Internal(err)
+	}
+	actor.Action = "layout_scenario.pin"
+	actor.EntityType = "layout_scenario"
+	actor.BeforeSummary = fmt.Sprintf("pins=%d", len(dto.DecodeRackPins(current.PinnedRackJSON)))
+	actor.AfterSummary = fmt.Sprintf("load=%d rack=%s pins=%d", req.LoadID, rack.RackCode, len(pins))
+	updated, err := s.scenarios.UpdatePins(ctx, id, req.Version, encoded, actor)
+	if err != nil {
+		return dto.ScenarioResponse{}, err
+	}
+	return dto.DecodeScenario(updated), nil
+}
+
+func (s *LayoutScenarioService) Unpin(ctx context.Context, id uint, req dto.UnpinRackRequest, actor audit.Entry) (dto.ScenarioResponse, error) {
+	current, err := s.scenarios.Get(ctx, id)
+	if err != nil {
+		return dto.ScenarioResponse{}, err
+	}
+	if current.ScenarioStatus != constants.ScenarioDraft {
+		return dto.ScenarioResponse{}, web.Unprocessable("SCENARIO_NOT_DRAFT", "rack pins can only be changed while the scenario is a draft", nil)
+	}
+	pins := dto.DecodeRackPins(current.PinnedRackJSON)
+	next := make([]dto.RackPin, 0, len(pins))
+	removed := false
+	for _, pin := range pins {
+		if pin.LoadID == req.LoadID {
+			removed = true
+			continue
+		}
+		next = append(next, pin)
+	}
+	if !removed {
+		return dto.ScenarioResponse{}, web.Unprocessable("PIN_NOT_FOUND", "load has no fixed rack in this draft", nil)
+	}
+	encoded, err := dto.EncodeRackPins(next)
+	if err != nil {
+		return dto.ScenarioResponse{}, web.Internal(err)
+	}
+	actor.Action = "layout_scenario.unpin"
+	actor.EntityType = "layout_scenario"
+	actor.BeforeSummary = fmt.Sprintf("pins=%d", len(pins))
+	actor.AfterSummary = fmt.Sprintf("load=%d pins=%d", req.LoadID, len(next))
+	updated, err := s.scenarios.UpdatePins(ctx, id, req.Version, encoded, actor)
+	if err != nil {
+		return dto.ScenarioResponse{}, err
+	}
+	return dto.DecodeScenario(updated), nil
+}
+
+func containsID(ids []uint, target uint) bool {
+	for _, id := range ids {
+		if id == target {
+			return true
+		}
+	}
+	return false
+}
+
+type pinConflictDetail struct {
+	dto.ConstraintViolation
+	LoadName string `json:"load_name,omitempty"`
+	RackCode string `json:"rack_code,omitempty"`
+	ZoneCode string `json:"zone_code,omitempty"`
+}
+
+func enrichPinConflicts(conflicts []dto.ConstraintViolation, racks []model.Rack, zones []model.ThermalZone) []pinConflictDetail {
+	rackByID := map[uint]model.Rack{}
+	for _, rack := range racks {
+		rackByID[rack.ID] = rack
+	}
+	zoneByID := map[uint]model.ThermalZone{}
+	for _, zone := range zones {
+		zoneByID[zone.ID] = zone
+	}
+	details := make([]pinConflictDetail, 0, len(conflicts))
+	for _, conflict := range conflicts {
+		detail := pinConflictDetail{ConstraintViolation: conflict}
+		if rack, ok := rackByID[conflict.RackID]; ok {
+			detail.RackCode = rack.RackCode
+			if zone, ok := zoneByID[rack.ZoneID]; ok {
+				detail.ZoneCode = zone.ZoneCode
+			}
+		}
+		if zone, ok := zoneByID[conflict.ZoneID]; ok && detail.ZoneCode == "" {
+			detail.ZoneCode = zone.ZoneCode
+		}
+		details = append(details, detail)
+	}
+	return details
 }
 
 func (s *LayoutScenarioService) Compare(ctx context.Context, leftID, rightID uint) (dto.ScenarioComparison, error) {

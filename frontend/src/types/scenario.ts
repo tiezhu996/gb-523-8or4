@@ -8,6 +8,13 @@ export interface ConstraintViolation {
   message: string;
   actual: number;
   limit: number;
+  rack_id?: number;
+  zone_id?: number;
+}
+
+export interface RackPin {
+  load_id: number;
+  rack_id: number;
 }
 
 export interface RackAssignment {
@@ -22,6 +29,7 @@ export interface RackAssignment {
   airflow_cfm: number;
   rack_units: number;
   placement_score: number;
+  pinned: boolean;
   explanation: string[];
 }
 
@@ -39,6 +47,8 @@ export interface LayoutScenario {
   id: number;
   name: string;
   scenario_status: ScenarioStatus;
+  load_ids: number[];
+  pins: RackPin[];
   assignments: RackAssignment[];
   zone_results: ZoneThermalResult[];
   violations: ConstraintViolation[];
@@ -50,6 +60,21 @@ export interface LayoutScenario {
   created_by: number;
   approved_by: number | null;
   has_critical_violation: boolean;
+}
+
+export interface PinConflict {
+  code: string;
+  severity: 'critical' | 'warning';
+  entity_type: string;
+  entity_id: number;
+  message: string;
+  actual: number;
+  limit: number;
+  rack_id?: number;
+  zone_id?: number;
+  load_name?: string;
+  rack_code?: string;
+  zone_code?: string;
 }
 
 export interface ScenarioComparison {

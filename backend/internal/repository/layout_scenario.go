@@ -131,6 +131,47 @@ func (r *LayoutScenarioRepository) FinishEvaluation(ctx context.Context, scenari
 	})
 }
 
+func (r *LayoutScenarioRepository) RecordPinBlock(ctx context.Context, id uint, entry audit.Entry) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		entry.EntityID = id
+		return r.audit.RecordWithDB(ctx, tx, entry)
+	})
+}
+
+func (r *LayoutScenarioRepository) UpdatePins(ctx context.Context, id, expectedVersion uint, pinsJSON string, entry audit.Entry) (model.LayoutScenario, error) {
+	var updated model.LayoutScenario
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var scenario model.LayoutScenario
+		if err := tx.First(&scenario, id).Error; err != nil {
+			return web.NotFound("layout scenario")
+		}
+		if scenario.Version != expectedVersion {
+			return web.Conflict("SCENARIO_VERSION_CONFLICT", "scenario was changed by another user", nil)
+		}
+		if scenario.ScenarioStatus != constants.ScenarioDraft {
+			return web.Unprocessable("SCENARIO_NOT_DRAFT", "rack pins can only be changed while the scenario is a draft", nil)
+		}
+		result := tx.Model(&model.LayoutScenario{}).
+			Where("id = ? AND version = ? AND scenario_status = ?", id, expectedVersion, constants.ScenarioDraft).
+			Updates(map[string]any{"pinned_rack_json": pinsJSON, "version": gorm.Expr("version + 1")})
+		if result.Error != nil {
+			return fmt.Errorf("update scenario rack pins: %w", result.Error)
+		}
+		if result.RowsAffected != 1 {
+			return web.Conflict("SCENARIO_VERSION_CONFLICT", "scenario changed while updating pins", nil)
+		}
+		entry.EntityID = id
+		return r.audit.RecordWithDB(ctx, tx, entry)
+	})
+	if err != nil {
+		return model.LayoutScenario{}, err
+	}
+	if err := r.db.WithContext(ctx).First(&updated, id).Error; err != nil {
+		return model.LayoutScenario{}, fmt.Errorf("reload scenario pins: %w", err)
+	}
+	return updated, nil
+}
+
 func (r *LayoutScenarioRepository) Transition(ctx context.Context, scenario model.LayoutScenario, target constants.ScenarioStatus, actorID uint, entry audit.Entry) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		updates := map[string]any{"scenario_status": target, "version": gorm.Expr("version + 1")}

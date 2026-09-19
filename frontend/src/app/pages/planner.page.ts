@@ -9,9 +9,10 @@ import { MatSelectModule } from '@angular/material/select';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { LucideAngularModule } from 'lucide-angular';
 import { finalize, forkJoin } from 'rxjs';
+import { HttpErrorResponse } from '@angular/common/http';
 import { EquipmentLoad } from '../../types/load';
 import { Rack } from '../../types/rack';
-import { LayoutScenario, RackAssignment, ScenarioStatus } from '../../types/scenario';
+import { LayoutScenario, PinConflict, RackAssignment, ScenarioStatus } from '../../types/scenario';
 import { LoadApi } from '../api/load.api';
 import { RackApi } from '../api/rack.api';
 import { ScenarioApi } from '../api/scenario.api';
@@ -60,6 +61,47 @@ import { ScenarioStore } from '../stores/scenario.store';
       </section>
 
       @if (selected(); as active) {
+        @if (pinConflicts().length > 0) {
+          <section class="pin-conflict-banner">
+            <div class="banner-head"><lucide-icon name="pin-off" [size]="16" /><strong>固定机柜评估失败，草稿已保留</strong><button type="button" mat-icon-button (click)="pinConflicts.set([])" aria-label="Dismiss"><lucide-icon name="x" [size]="14" /></button></div>
+            <p>固定项仍受功率、气流、U 位、热区与冗余隔离限制；解除或调整下列固定后可重新评估。</p>
+            @for (conflict of pinConflicts(); track conflict.code + '-' + conflict.entity_id + '-' + conflict.rack_id) {
+              <div class="conflict-row"><app-constraint-badge severity="critical" [label]="conflict.code" />
+                <div class="conflict-body"><p>{{ conflict.message }}</p><small>负载 #{{ conflict.entity_id }}@if (conflict.load_name) { · {{ conflict.load_name }}}@if (conflict.rack_code) { · 机柜 {{ conflict.rack_code }}}@if (conflict.zone_code) { · 热区 {{ conflict.zone_code }}} · 实际 {{ conflict.actual | number:'1.0-1' }} / 上限 {{ conflict.limit | number:'1.0-1' }}</small></div>
+              </div>
+            }
+          </section>
+        }
+
+        @if (active.scenario_status === 'draft' && canPlan()) {
+          <section class="panel pins-panel">
+            <div class="panel-header"><h2><lucide-icon name="pin" [size]="14" /> 固定机柜</h2><span class="secondary">将草稿中的负载固定到指定机柜；固定项评估时优先占位，不满足约束则整体失败。</span></div>
+            @if (scenarioLoads().length > 0) {
+              <div class="table-wrap"><table class="data-table"><thead><tr><th>负载</th><th>需求</th><th>固定机柜</th><th></th></tr></thead><tbody>
+                @for (load of scenarioLoads(); track load.id) {
+                  <tr [class.pinned-row]="pinnedRackId(load.id) !== null">
+                    <td class="primary-cell">{{ load.name }}<br><span class="secondary">冗余组 {{ load.redundancy_group }}</span></td>
+                    <td>{{ load.power_kw | number:'1.0-1' }} kW / {{ load.airflow_cfm | number:'1.0-0' }} CFM / {{ load.rack_units }}U</td>
+                    <td>
+                      <mat-form-field appearance="outline" subscriptSizing="dynamic" class="pin-select">
+                        <mat-label>机柜</mat-label>
+                        <mat-select [value]="pinnedRackId(load.id)" (selectionChange)="setPin(load.id, $event.value)">
+                          <mat-option [value]="null">不固定（自动布局）</mat-option>
+                          @for (rack of racks(); track rack.id) {
+                            <mat-option [value]="rack.id">{{ rack.rack_code }} · {{ rack.zone_code }} · {{ rack.rack_status }}</mat-option>
+                          }
+                        </mat-select>
+                      </mat-form-field>
+                      @if (pinnedRackId(load.id) !== null) {<app-constraint-badge severity="warning" label="已固定" />}
+                    </td>
+                    <td class="pin-action">@if (pinnedRackId(load.id) !== null) {<button mat-stroked-button type="button" (click)="unpin(load.id)"><lucide-icon name="pin-off" [size]="13" /> 取消固定</button>}</td>
+                  </tr>
+                }
+              </tbody></table></div>
+            } @else {<div class="aside-empty">该草稿没有可固定的负载。</div>}
+          </section>
+        }
+
         <section class="metric-strip">
           <div class="metric"><small>Placement score</small><strong>{{ active.score | number:'1.0-1' }}</strong><span>Deterministic weighted score</span></div>
           <div class="metric"><small>Assigned power</small><strong>{{ active.total_power_kw | number:'1.0-1' }} kW</strong><span>{{ active.assignments.length }} placed loads</span></div>
@@ -76,7 +118,7 @@ import { ScenarioStore } from '../stores/scenario.store';
                   <header><strong>{{ rack.rack_code }}</strong><span>{{ rack.zone_code }}</span></header>
                   <div class="assigned-loads">
                     @for (assignment of assignmentsFor(rack.id); track assignment.load_id) {
-                      <div><lucide-icon name="cpu" [size]="12" /><span>{{ assignment.load_name }}</span><strong>{{ assignment.power_kw | number:'1.0-1' }} kW</strong></div>
+                      <div [class.pinned-assignment]="assignment.pinned"><lucide-icon [name]="assignment.pinned ? 'pin' : 'cpu'" [size]="12" /><span>{{ assignment.load_name }}</span><strong>{{ assignment.power_kw | number:'1.0-1' }} kW</strong></div>
                     } @empty {<span class="vacant">{{ rack.rack_status === 'available' ? 'Available' : rack.rack_status }}</span>}
                   </div>
                   <footer><span><lucide-icon name="zap" [size]="11" />{{ rackPower(rack.id) | number:'1.0-1' }} / {{ rack.power_limit_kw | number:'1.0-0' }}</span><span>R{{ rack.row_index }} C{{ rack.column_index }}</span></footer>
@@ -104,7 +146,7 @@ import { ScenarioStore } from '../stores/scenario.store';
         <section class="panel assignments-panel">
           <div class="panel-header"><h2>Placement rationale</h2><span class="secondary">Ordered deterministic result</span></div>
           <div class="table-wrap"><table class="data-table"><thead><tr><th>Load</th><th>Placement</th><th>Demand</th><th>Candidate score</th><th>Explanation</th></tr></thead><tbody>
-            @for (item of active.assignments; track item.load_id) {<tr><td class="primary-cell">{{ item.load_name }}</td><td><strong>{{ item.rack_code }}</strong><br><span class="secondary">{{ item.zone_code }}</span></td><td>{{ item.power_kw | number:'1.0-1' }} kW / {{ item.airflow_cfm | number:'1.0-0' }} CFM / {{ item.rack_units }}U</td><td class="numeric">{{ item.placement_score | number:'1.0-1' }}</td><td class="secondary">{{ item.explanation.join(' / ') }}</td></tr>}
+            @for (item of active.assignments; track item.load_id) {<tr [class.pinned-row]="item.pinned"><td class="primary-cell">{{ item.load_name }} @if (item.pinned) {<app-constraint-badge severity="warning" label="pinned" />}</td><td><strong>{{ item.rack_code }}</strong><br><span class="secondary">{{ item.zone_code }}</span></td><td>{{ item.power_kw | number:'1.0-1' }} kW / {{ item.airflow_cfm | number:'1.0-0' }} CFM / {{ item.rack_units }}U</td><td class="numeric">{{ item.placement_score | number:'1.0-1' }}</td><td class="secondary">{{ item.explanation.join(' / ') }}</td></tr>}
           </tbody></table></div>
         </section>
       } @else {
@@ -113,8 +155,9 @@ import { ScenarioStore } from '../stores/scenario.store';
     </div>
   `,
   styles: [`
+    .pins-panel{margin-bottom:16px}.pins-panel .panel-header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:11px 14px;border-bottom:1px solid #e5e8ea}.pins-panel h2{margin:0;font-size:13px;text-transform:uppercase;display:inline-flex;align-items:center;gap:6px}.pin-select{min-width:260px;width:30vw;max-width:340px}.pin-action{text-align:right;white-space:nowrap}.pinned-row td{background:#fff7e6}.assigned-loads>div.pinned-assignment{border-left-color:#2b6cb0}.pin-conflict-banner{margin-bottom:16px;padding:14px 16px;background:#fff0ee;border:1px solid #e1a29b;border-left:4px solid #cf3f2e}.banner-head{display:flex;align-items:center;gap:8px;color:#a1281e;margin-bottom:6px}.banner-head strong{font-size:13px;flex:1}.banner-head button{margin-left:auto;line-height:1}.pin-conflict-banner>p{margin:0 0 10px;font-size:11px;color:#68717a}.conflict-row{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-top:1px dashed #e6c4c0}.conflict-row:first-of-type{border-top:0}.conflict-body p{margin:0 0 3px;font-size:11px;line-height:1.45}.conflict-body small{color:#8a4a44;font-size:9px}
     .scenario-builder{margin-bottom:16px;padding:16px;background:#fff;border:1px solid #aeb6bd;border-top:3px solid #cf3f2e}.scenario-builder form{display:grid;grid-template-columns:320px minmax(0,1fr);gap:16px}.load-picker{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:6px 12px;max-height:180px;overflow:auto;padding:2px}.load-picker strong,.load-picker small{display:block;letter-spacing:0}.load-picker strong{font-size:11px}.load-picker small{color:#68717a;font-size:9px}.builder-actions{grid-column:1/-1;display:flex;align-items:center;justify-content:flex-end;gap:8px;border-top:1px solid #d8dde1;padding-top:10px}.builder-actions>span{margin-right:auto;color:#68717a;font-size:11px}.control-bar{min-height:66px;display:flex;align-items:center;gap:12px;margin-bottom:16px;padding:9px 12px;background:#fff;border:1px solid #d8dde1}.control-bar mat-form-field{width:min(440px,40vw)}.control-spacer{flex:1}.algorithm{color:#68717a;font:600 10px/1 monospace}.planner-grid{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:16px;align-items:start}.layout-surface{min-width:0;background:#23282d;border:1px solid #101214;color:#eef1f3}.surface-header{min-height:58px;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:11px 15px;border-bottom:1px solid #42494f}.surface-header strong,.surface-header small{display:block;letter-spacing:0}.surface-header strong{font-size:13px}.surface-header small{margin-top:3px;color:#aeb6bc;font-size:10px}.candidate-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;padding:14px}.candidate-rack{height:158px;display:grid;grid-template-rows:27px 1fr 28px;min-width:0;background:#15191d;border:1px solid #596168;border-top:4px solid #4b9a77;border-radius:3px;overflow:hidden}.candidate-rack.warm{border-top-color:#d79318}.candidate-rack.hot{border-top-color:#cf3f2e}.candidate-rack.blocked{opacity:.58;border-top-color:#778087}.candidate-rack header,.candidate-rack footer{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:0 8px;background:#2b3136}.candidate-rack header strong{font-size:11px}.candidate-rack header span{color:#aeb6bc;font-size:9px}.assigned-loads{display:grid;align-content:start;gap:4px;padding:7px;overflow:auto}.assigned-loads>div{display:grid;grid-template-columns:14px minmax(0,1fr) auto;align-items:center;gap:4px;padding:5px;color:#e8ecee;background:#30373c;border-left:2px solid #d79318;font-size:9px}.assigned-loads>div span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.assigned-loads>div strong{font-size:8px}.vacant{margin:auto;color:#7f8990;font-size:9px;text-transform:uppercase}.candidate-rack footer{color:#b8c0c5;font-size:8px}.candidate-rack footer span{display:flex;align-items:center;gap:3px}.evidence-panel{background:#fff;border:1px solid #d8dde1}.evidence-section{padding:14px}.evidence-section+ .evidence-section{border-top:1px solid #d8dde1}.evidence-section h2{margin:0 0 9px;font-size:12px;text-transform:uppercase}.thermal-row{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #e5e8ea}.thermal-row:last-child{border-bottom:0}.thermal-row strong,.thermal-row small{display:block;letter-spacing:0}.thermal-row strong{font-size:11px}.thermal-row small{margin-top:3px;color:#68717a;font-size:9px}.temperature{text-align:right}.temperature strong{font-size:15px}.violation{padding:11px 0;border-bottom:1px solid #e5e8ea}.violation:last-child{border-bottom:0}.violation p{margin:7px 0 4px;font-size:11px;line-height:1.4}.violation>small{color:#68717a;font-size:9px}.aside-empty{padding:18px 4px;color:#68717a;font-size:11px;text-align:center}.assignments-panel{margin-top:16px}
-    @media(max-width:1150px){.planner-grid{grid-template-columns:1fr}.evidence-panel{display:grid;grid-template-columns:1fr 1fr}.evidence-section+.evidence-section{border-top:0;border-left:1px solid #d8dde1}}@media(max-width:760px){.scenario-builder form{grid-template-columns:1fr}.control-bar{align-items:stretch;flex-wrap:wrap}.control-bar mat-form-field{width:100%}.control-spacer{display:none}.candidate-grid{grid-template-columns:repeat(2,minmax(0,1fr));padding:9px}.evidence-panel{grid-template-columns:1fr}.evidence-section+.evidence-section{border-left:0;border-top:1px solid #d8dde1}}@media(max-width:430px){.candidate-grid{grid-template-columns:1fr}}
+    @media(max-width:1150px){.planner-grid{grid-template-columns:1fr}.evidence-panel{display:grid;grid-template-columns:1fr 1fr}.evidence-section+.evidence-section{border-top:0;border-left:1px solid #d8dde1}}@media(max-width:760px){.scenario-builder form{grid-template-columns:1fr}.control-bar{align-items:stretch;flex-wrap:wrap}.control-bar mat-form-field{width:100%}.control-spacer{display:none}.candidate-grid{grid-template-columns:repeat(2,minmax(0,1fr));padding:9px}.evidence-panel{grid-template-columns:1fr}.evidence-section+.evidence-section{border-left:0;border-top:1px solid #d8dde1}.pin-select{min-width:180px;width:52vw}}@media(max-width:430px){.candidate-grid{grid-template-columns:1fr}}
   `]
 })
 export class PlannerPage {
@@ -126,8 +169,16 @@ export class PlannerPage {
   readonly selected = this.store.selected;
   readonly createOpen = signal(false);
   readonly creating = signal(false);
+  readonly pinBusy = signal(false);
+  readonly pinConflicts = signal<PinConflict[]>([]);
   readonly selectedLoadIds = signal<Set<number>>(new Set());
   readonly readyLoads = computed(() => this.loads().filter((load) => load.load_status === 'ready'));
+  readonly scenarioLoads = computed(() => {
+    const active = this.selected();
+    if (!active) { return []; }
+    const ids = new Set(active.load_ids ?? []);
+    return this.loads().filter((load) => ids.has(load.id));
+  });
   readonly criticalCount = computed(() => this.selected()?.violations.filter((item) => item.severity === 'critical').length ?? 0);
   readonly form = this.fb.nonNullable.group({name: ['', [Validators.required, Validators.minLength(3)]]});
 
@@ -135,10 +186,37 @@ export class PlannerPage {
   canPlan(): boolean { return this.auth.hasRole('planner', 'admin'); }
   canApprove(): boolean { return this.auth.hasRole('reviewer', 'admin'); }
   load(): void { forkJoin({scenarios: this.scenarioApi.list(), racks: this.rackApi.list(), loads: this.loadApi.list()}).subscribe(({scenarios, racks, loads}) => { this.scenarios.set(scenarios.items); this.racks.set(racks.items); this.loads.set(loads.items); const current = this.selected(); const selected = scenarios.items.find((item) => item.id === current?.id) ?? scenarios.items[0] ?? null; this.store.select(selected); if (this.selectedLoadIds().size === 0) this.selectedLoadIds.set(new Set(loads.items.filter((item) => item.load_status === 'ready').map((item) => item.id))); }); }
-  selectScenario(id: number): void { this.store.select(this.scenarios().find((item) => item.id === id) ?? null); }
+  selectScenario(id: number): void { this.pinConflicts.set([]); this.store.select(this.scenarios().find((item) => item.id === id) ?? null); }
   toggleLoad(id: number, checked: boolean): void { const next = new Set(this.selectedLoadIds()); checked ? next.add(id) : next.delete(id); this.selectedLoadIds.set(next); }
   createScenario(): void { if (this.form.invalid || this.selectedLoadIds().size === 0) return; this.creating.set(true); this.scenarioApi.create(this.form.controls.name.value, [...this.selectedLoadIds()]).pipe(finalize(() => this.creating.set(false))).subscribe((scenario) => { this.createOpen.set(false); this.form.reset(); this.scenarios.update((items) => [scenario, ...items]); this.store.select(scenario); this.snack.open('Draft scenario created', undefined, {duration: 2200}); }); }
-  evaluate(): void { const scenario = this.selected(); if (!scenario) return; this.evaluation.evaluate(scenario).subscribe((result) => { this.store.select(result); this.scenarios.update((items) => items.map((item) => item.id === result.id ? result : item)); this.snack.open(`Evaluation complete: score ${result.score.toFixed(1)}`, undefined, {duration: 2800}); }); }
+  evaluate(): void { const scenario = this.selected(); if (!scenario) return; this.pinConflicts.set([]); this.evaluation.evaluate(scenario).subscribe({next: (result) => { this.store.select(result); this.scenarios.update((items) => items.map((item) => item.id === result.id ? result : item)); this.snack.open(`Evaluation complete: score ${result.score.toFixed(1)}`, undefined, {duration: 2800}); }, error: (error: unknown) => { this.capturePinConflicts(error); }}); }
+  pinnedRackId(loadId: number): number | null { return this.selected()?.pins.find((pin) => pin.load_id === loadId)?.rack_id ?? null; }
+  setPin(loadId: number, rackId: number | null): void {
+    const active = this.selected();
+    if (!active || rackId === null) { if (this.pinnedRackId(loadId) !== null) { this.unpin(loadId); } return; }
+    this.pinBusy.set(true);
+    this.scenarioApi.pin(active.id, {load_id: loadId, rack_id: rackId, version: active.version}).pipe(finalize(() => this.pinBusy.set(false))).subscribe({next: (scenario) => this.applyScenario(scenario), error: () => this.reloadSelected(active.id)});
+  }
+  unpin(loadId: number): void {
+    const active = this.selected();
+    if (!active) { return; }
+    this.pinBusy.set(true);
+    this.scenarioApi.unpin(active.id, loadId, active.version).pipe(finalize(() => this.pinBusy.set(false))).subscribe({next: (scenario) => this.applyScenario(scenario), error: () => this.reloadSelected(active.id)});
+  }
+  applyScenario(scenario: LayoutScenario): void {
+    this.store.select(scenario);
+    this.scenarios.update((items) => items.map((item) => item.id === scenario.id ? scenario : item));
+  }
+  reloadSelected(id: number): void { this.scenarioApi.get(id).subscribe((scenario) => this.applyScenario(scenario)); }
+  capturePinConflicts(error: unknown): void {
+    if (!(error instanceof HttpErrorResponse)) { return; }
+    const conflicts = error.error?.error?.details?.conflicts as PinConflict[] | undefined;
+    if (Array.isArray(conflicts) && conflicts.length > 0) {
+      this.pinConflicts.set(conflicts);
+      const active = this.selected();
+      if (active) { this.reloadSelected(active.id); }
+    }
+  }
   transition(target: ScenarioStatus): void { const scenario = this.selected(); if (!scenario) return; this.scenarioApi.transition(scenario.id, scenario.version, target, 'Reviewed in planning workbench').subscribe((result) => { this.store.select(result); this.scenarios.update((items) => items.map((item) => item.id === result.id ? result : item)); this.snack.open(`Scenario ${target.replace('_', ' ')}`, undefined, {duration: 2200}); }); }
   assignmentsFor(rackId: number): RackAssignment[] { return this.selected()?.assignments.filter((item) => item.rack_id === rackId) ?? []; }
   rackPower(rackId: number): number { return this.assignmentsFor(rackId).reduce((sum, item) => sum + item.power_kw, 0); }

@@ -1,7 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 import { ApiClient, ApiPage } from './api-client';
-import { LayoutScenario, ScenarioComparison, ScenarioStatus } from '../../types/scenario';
+import { LayoutScenario, RackPin, ScenarioComparison, ScenarioStatus } from '../../types/scenario';
 
 @Injectable({providedIn: 'root'})
 export class ScenarioApi {
@@ -10,6 +10,8 @@ export class ScenarioApi {
   get(id: number): Observable<LayoutScenario> { return this.api.get(`/scenarios/${id}`); }
   create(name: string, loadIds: number[]): Observable<LayoutScenario> { return this.api.post('/scenarios', {name, load_ids: loadIds}); }
   evaluate(id: number, version: number): Observable<LayoutScenario> { return this.api.post(`/scenarios/${id}/evaluate`, {version}); }
+  pin(id: number, pin: RackPin & {version: number}): Observable<LayoutScenario> { return this.api.post(`/scenarios/${id}/pins`, pin); }
+  unpin(id: number, loadId: number, version: number): Observable<LayoutScenario> { return this.api.delete(`/scenarios/${id}/pins`, {load_id: loadId, version}); }
   transition(id: number, version: number, target: ScenarioStatus, reason: string): Observable<LayoutScenario> {
     return this.api.post(`/scenarios/${id}/transition`, {version, target_status: target, reason});
   }

@@ -22,6 +22,7 @@ type AppError struct {
 	Status  int
 	Code    string
 	Message string
+	Details any
 	Cause   error
 }
 
@@ -58,6 +59,10 @@ func Unprocessable(code, message string, cause error) *AppError {
 	return &AppError{Status: http.StatusUnprocessableEntity, Code: code, Message: message, Cause: cause}
 }
 
+func UnprocessableDetails(code, message string, details any) *AppError {
+	return &AppError{Status: http.StatusUnprocessableEntity, Code: code, Message: message, Details: details}
+}
+
 func Internal(cause error) *AppError {
 	return &AppError{Status: http.StatusInternalServerError, Code: "INTERNAL_ERROR", Message: "internal service error", Cause: cause}
 }
@@ -71,6 +76,7 @@ type Envelope struct {
 type Error struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	Details any    `json:"details,omitempty"`
 }
 
 type Page struct {
@@ -93,7 +99,7 @@ func NoContent(c *gin.Context) { c.Status(http.StatusNoContent) }
 func Fail(c *gin.Context, err error) {
 	var appErr *AppError
 	if errors.As(err, &appErr) {
-		c.JSON(appErr.Status, Envelope{Error: &Error{Code: appErr.Code, Message: appErr.Message}, RequestID: RequestID(c)})
+		c.JSON(appErr.Status, Envelope{Error: &Error{Code: appErr.Code, Message: appErr.Message, Details: appErr.Details}, RequestID: RequestID(c)})
 		return
 	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {
